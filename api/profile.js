@@ -1,42 +1,88 @@
-export default async function handler(req, res) {
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Cache-Control", "s-maxage=60, stale-while-revalidate=300");
-  if (req.method !== "GET") return res.status(405).json({ ok: false, error: "method tidak didukung" });
 
-  const username = String(req.query.username || "").trim().replace(/^@/, "").replace(/\/.*$/, "");
-  if (!username || !/^[a-zA-Z0-9._]{1,100}$/.test(username)) {
-    return res.status(400).json({ ok: false, error: "username tidak valid" });
+export default async function handler(req, res) {
+  if (req.method !== "GET") {
+    return res.status(405).json({
+      ok: false,
+      error: "method tidak didukung"
+    });
+  }
+
+  const username = String(req.query.username || "")
+    .trim()
+    .replace(/^@/, "");
+
+  if (!/^[a-zA-Z0-9._]{1,100}$/.test(username)) {
+    return res.status(400).json({
+      ok: false,
+      error: "username tidak valid"
+    });
+  }
+
+  const apiKey = process.env.SOCIFLUX_API_KEY;
+
+  if (!apiKey) {
+    return res.status(500).json({
+      ok: false,
+      error: "SOCIFLUX_API_KEY belum diatur di Vercel"
+    });
   }
 
   try {
-    // TikWM menyediakan endpoint publik yang bisa berubah sewaktu-waktu.
-    const upstream = await fetch("https://www.tikwm.com/api/user/info?unique_id=" + encodeURIComponent(username), {
-      headers: { "Accept": "application/json", "User-Agent": "Mozilla/5.0 TikTokProfileChecker/1.0" }
-    });
-    if (!upstream.ok) throw new Error("sumber data membalas HTTP " + upstream.status);
-    const body = await upstream.json();
-    if (body.code !== 0 || !body.data) {
-      return res.status(404).json({ ok: false, error: body.msg || "profil tidak ditemukan atau API tidak mengembalikan data" });
+    const response = await fetch(
+      "https://api.sociflux.com/v1/tiktok/profile?username=" +
+        encodeURIComponent(username),
+      {
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          Accept: "application/json"
+        }
+      }
+    );
+
+    const result = await response.json();
+
+    if (!response.ok) {
+      return res.status(response.status).json({
+        ok: false,
+        error: result.message || result.error ||
+          `API error HTTP ${response.status}`
+      });
     }
-    const raw = body.data.user || body.data;
-    const stats = raw.stats || {};
-    const profile = {
-      unique_id: raw.unique_id || raw.uniqueId || username,
-      nickname: raw.nickname || raw.nick_name || raw.display_name,
-      user_id: raw.id || raw.uid || raw.user_id,
-      avatar: raw.avatar || raw.avatar_larger || raw.avatarMedium || raw.avatar_url,
-      signature: raw.signature || raw.bio_description,
-      verified: raw.verified ?? raw.is_verified,
-      follower_count: raw.follower_count ?? stats.followerCount,
-      following_count: raw.following_count ?? stats.followingCount,
-      likes_count: raw.likes_count ?? raw.total_favorited ?? stats.heartCount,
-      video_count: raw.video_count ?? stats.videoCount,
-      country: raw.country || raw.region,
-      language: raw.language,
-      created_at: raw.created_at || raw.create_time
-    };
-    return res.status(200).json({ ok: true, profile });
+
+    const d = result.data?.user || result.data?.profile ||
+      result.data || result.user || result.profile;
+
+    if (!d || typeof d !== "object") {
+      return res.status(502).json({
+        ok: false,
+        error: "format respons API tidak sesuai"
+      });
+    }
+
+    const stats = d.stats || {};
+
+    return res.status(200).json({
+      ok: true,
+      profile: {
+        unique_id: d.username || d.unique_id || username,
+        nickname: d.nickname || d.display_name,
+        user_id: d.id || d.user_id,
+        avatar: d.avatar || d.avatar_url,
+        signature: d.bio || d.signature,
+        verified: d.verified ?? d.is_verified,
+        follower_count: d.follower_count ?? stats.followers,
+        following_count: d.following_count ?? stats.following,
+        likes_count: d.likes_count ?? stats.likes,
+        video_count: d.video_count ?? stats.videos,
+        country: d.country || d.region,
+        language: d.language,
+        created_at: d.create_time || d.created_at
+      }
+    });
   } catch (error) {
-    return res.status(502).json({ ok: false, error: "sumber data sedang tidak bisa diakses. " + error.message });
+    return res.status(502).json({
+      ok: false,
+      error: "gagal menghubungi sumber data API"
+    });
   }
 }
